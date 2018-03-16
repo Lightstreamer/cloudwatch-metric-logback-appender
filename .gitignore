@@ -1,0 +1,9 @@
+# Configuration files
+.*
+!/.git*
+
+# maven files
+/target
+
+# IDE
+/*.iml
