@@ -19,53 +19,15 @@ import java.util.*;
 public final class AwsMetricAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
 
     private String namespace = "Lightstreamer";
+    private int storageResolution = 60;
 
-    private final AmazonCloudWatchAsync cw =
-            AmazonCloudWatchAsyncClientBuilder.defaultClient();
-    private static final Map.Entry[] FIELD_DESCRIPTORS = new Map.Entry[]{
-            new AbstractMap.SimpleImmutableEntry<>("Threads", StandardUnit.Count),
-            new AbstractMap.SimpleImmutableEntry<>("HeapTotal", StandardUnit.Bytes),
-            new AbstractMap.SimpleImmutableEntry<>("HeapFree", StandardUnit.Bytes),
-            new AbstractMap.SimpleImmutableEntry<>("Sessions", StandardUnit.Count),
-            null, // max sessions
-            new AbstractMap.SimpleImmutableEntry<>("SessionsAdded", StandardUnit.Count),
-            new AbstractMap.SimpleImmutableEntry<>("SessionsClosed", StandardUnit.Count),
-            new AbstractMap.SimpleImmutableEntry<>("Connections", StandardUnit.Count),
-            null, // max connections
-            new AbstractMap.SimpleImmutableEntry<>("ConnectionsAdded", StandardUnit.Count),
-            new AbstractMap.SimpleImmutableEntry<>("ConnectionsClosed", StandardUnit.Count),
-            null, // separator
-            new AbstractMap.SimpleImmutableEntry<>("ThreadsInPool", StandardUnit.Count),
-            new AbstractMap.SimpleImmutableEntry<>("ThreadsActive", StandardUnit.Count),
-            new AbstractMap.SimpleImmutableEntry<>("ThreadsAvailable", StandardUnit.None),
-            new AbstractMap.SimpleImmutableEntry<>("TasksQueued", StandardUnit.Count),
-            new AbstractMap.SimpleImmutableEntry<>("PoolQueueWait", StandardUnit.Milliseconds),
-            new AbstractMap.SimpleImmutableEntry<>("NioWriteQueue", StandardUnit.Count),
-            new AbstractMap.SimpleImmutableEntry<>("NioWriteQueueWait", StandardUnit.Milliseconds),
-            new AbstractMap.SimpleImmutableEntry<>("NioWriteSelectors", StandardUnit.Count),
-            new AbstractMap.SimpleImmutableEntry<>("NioTotalSelectors", StandardUnit.Count),
-            null, // separator
-            new AbstractMap.SimpleImmutableEntry<>("ItemsSubscribed", StandardUnit.Count),
-            new AbstractMap.SimpleImmutableEntry<>("ItemsSubscribedClient", StandardUnit.Count),
-            new AbstractMap.SimpleImmutableEntry<>("InboundThroughput", StandardUnit.CountSecond),
-            new AbstractMap.SimpleImmutableEntry<>("InboundPrefiltered", StandardUnit.CountSecond),
-            new AbstractMap.SimpleImmutableEntry<>("InboundThroughput", StandardUnit.CountSecond),
-            new AbstractMap.SimpleImmutableEntry<>("InboundThroughputNet", StandardUnit.KilobitsSecond),
-            null, // max outbound throughput (kbit/s)
-            new AbstractMap.SimpleImmutableEntry<>("LostUpdate", StandardUnit.Count),
-            null, // total lost updates
-            null, // total bytes sent
-            null, // separator
-            new AbstractMap.SimpleImmutableEntry<>("ClientMessagesInboundThroughput", StandardUnit.CountSecond),
-            new AbstractMap.SimpleImmutableEntry<>("ClientMessagesInboundThroughputNet", StandardUnit.KilobitsSecond),
-            null, // max client messages throughput (kbit/s)
-            null, // total messages handled
-            new AbstractMap.SimpleImmutableEntry<>("ExtraSleepTime", StandardUnit.Milliseconds),
-            new AbstractMap.SimpleImmutableEntry<>("ExtraNotifyTime", StandardUnit.Milliseconds),
-            null // time
-    };
+    private AmazonCloudWatchAsync cw;
 
     private final List<Dimension> dimensions = new ArrayList<>();
+
+    private int timeColumnPos = -1;
+    private String[] columnTitles;
+    private StandardUnit[] columnUnits;
 
     public AwsMetricAppender() {
         try {
@@ -78,27 +40,39 @@ public final class AwsMetricAppender extends UnsynchronizedAppenderBase<ILogging
     }
 
     @Override
+    public void start() {
+        super.start();
+        cw = AmazonCloudWatchAsyncClientBuilder.defaultClient();
+    }
+
+    @Override
     protected void append(final ILoggingEvent eventObject) {
         try {
             final String[] fields = eventObject.getFormattedMessage().split(",");
+            if (timeColumnPos <= 0) {
+                parseHeader(fields);
+                return;
+            }
 
-            if (fields.length != FIELD_DESCRIPTORS.length)
+            if (fields.length != columnTitles.length)
                 throw new IllegalArgumentException("Unable to parse event");
 
             if (fields[fields.length - 1].equals("time"))
                 return; // skip header
 
-            final List<MetricDatum> datumList = new ArrayList<>(FIELD_DESCRIPTORS.length);
-            for (int i = 0; i < FIELD_DESCRIPTORS.length; i++) {
-                final Map.Entry<String, StandardUnit> descriptor = FIELD_DESCRIPTORS[i];
-                if (descriptor == null) continue;
+            final List<MetricDatum> datumList = new ArrayList<>(columnTitles.length);
+            final Date timestamp = new Date(Long.parseLong(fields[timeColumnPos]));
+            for (int i = 0; i < columnTitles.length; i++) {
+                final String metricName = columnTitles[i];
+                if (metricName == null) continue;
 
                 final MetricDatum datum = new MetricDatum()
-                        .withMetricName(descriptor.getKey())
-                        .withUnit(descriptor.getValue())
+                        .withMetricName(metricName)
+                        .withUnit(columnUnits[i])
                         .withValue(Double.parseDouble(fields[i]))
                         .withDimensions(dimensions)
-                        .withTimestamp(new Date(Long.parseLong(fields[fields.length - 1])));
+                        .withStorageResolution(storageResolution)
+                        .withTimestamp(timestamp);
                 datumList.add(datum);
             }
 
@@ -112,6 +86,47 @@ public final class AwsMetricAppender extends UnsynchronizedAppenderBase<ILogging
             }
         } catch (final Exception e) {
             addError("Error while sending metric " + eventObject.getFormattedMessage(), e);
+            if (getClass().desiredAssertionStatus())
+                e.printStackTrace();
+        }
+    }
+
+    private void parseHeader(final String[] headers) {
+        columnTitles = new String[headers.length];
+        columnUnits = new StandardUnit[headers.length];
+
+        for (int i = 0; i < headers.length; i++) {
+            final String header = headers[i];
+            if (header.equals("separator")
+                    || header.startsWith("max ")
+                    || header.startsWith("total ") && !header.equals("total threads") && !header.equals("total heap"))
+                continue;
+
+            if (header.equals("time")) {
+                timeColumnPos = i;
+                continue;
+            }
+
+            final StandardUnit standardUnit;
+            if (header.contains("time") || header.contains("wait")) {
+                standardUnit = StandardUnit.Milliseconds;
+            } else if (header.contains("heap")) {
+                standardUnit = StandardUnit.Bytes;
+            } else if (header.contains("kbit/s")) {
+                standardUnit = StandardUnit.KilobitsSecond;
+            } else if (header.contains("/s")) {
+                standardUnit = StandardUnit.CountSecond;
+            } else if (header.contains("added") || header.contains("closed")) {
+                standardUnit = StandardUnit.Count;
+            } else {
+                standardUnit = StandardUnit.None;
+            }
+
+            columnTitles[i] = header
+                    .replaceAll("\\W+", " ")
+                    .trim()
+                    .replace(' ', ' ');
+            columnUnits[i] = standardUnit;
         }
     }
 
@@ -151,6 +166,14 @@ public final class AwsMetricAppender extends UnsynchronizedAppenderBase<ILogging
 
     public void setNamespace(final String namespace) {
         this.namespace = namespace;
+    }
+
+    public int getStorageResolution() {
+        return storageResolution;
+    }
+
+    public void setStorageResolution(int storageResolution) {
+        this.storageResolution = storageResolution;
     }
 
     private final class PutMetricHandler implements AsyncHandler<PutMetricDataRequest, PutMetricDataResult> {

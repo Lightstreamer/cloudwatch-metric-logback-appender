@@ -44,9 +44,14 @@ Setup `lightstreamer_log_conf.xml`:
 </configuration>
 ```
 
+Setup `lightstreamer_conf.xml`:
+
+Set `collector_millis=1000` and log `level=info` to produce metrics every minute.
+
 #### Properties:
 
-| Property       | Required  | Description                                           |
-| :------------- | :-------: | :---------------------------------------------------- |
-| namespace      | no        | CloudWatch metric name.                               |
-| dimensions     | no        | Extra dimension in `java.util.Properties` text format |
+| Property          | Required  | Description                                           |
+| :---------------- | :-------: | :---------------------------------------------------- |
+| namespace         | no        | CloudWatch metric name.                               |
+| dimensions        | no        | Extra dimension in `java.util.Properties` text format |
+| storageResolution | no        | Metric storage resolution (default 60)                |
