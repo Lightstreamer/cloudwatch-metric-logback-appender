@@ -125,7 +125,7 @@ public final class AwsMetricAppender extends UnsynchronizedAppenderBase<ILogging
             columnTitles[i] = header
                     .replaceAll("\\W+", " ")
                     .trim()
-                    .replace(' ', ' ');
+                    .replace(' ', '_');
             columnUnits[i] = standardUnit;
         }
     }
