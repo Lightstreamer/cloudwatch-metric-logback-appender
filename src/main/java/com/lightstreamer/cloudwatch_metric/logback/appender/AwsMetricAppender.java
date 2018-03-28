@@ -36,13 +36,21 @@ public final class AwsMetricAppender extends UnsynchronizedAppenderBase<ILogging
                     .withValue(InetAddress.getLocalHost().getHostName());
             dimensions.add(dimension);
         } catch (final Exception e) {
+            addWarn("Unable to read hostname", e);
         }
     }
 
     @Override
     public void start() {
-        super.start();
         cw = AmazonCloudWatchAsyncClientBuilder.defaultClient();
+        super.start();
+    }
+
+    @Override
+    public void stop() {
+        super.stop();
+        cw.shutdown();
+        cw = null;
     }
 
     @Override
@@ -97,6 +105,7 @@ public final class AwsMetricAppender extends UnsynchronizedAppenderBase<ILogging
 
         for (int i = 0; i < headers.length; i++) {
             final String header = headers[i];
+
             if (header.equals("separator")
                     || header.startsWith("max ")
                     || header.startsWith("total ") && !header.equals("total threads") && !header.equals("total heap"))
@@ -116,10 +125,8 @@ public final class AwsMetricAppender extends UnsynchronizedAppenderBase<ILogging
                 standardUnit = StandardUnit.KilobitsSecond;
             } else if (header.contains("/s")) {
                 standardUnit = StandardUnit.CountSecond;
-            } else if (header.contains("added") || header.contains("closed")) {
-                standardUnit = StandardUnit.Count;
             } else {
-                standardUnit = StandardUnit.None;
+                standardUnit = StandardUnit.Count;
             }
 
             columnTitles[i] = header
